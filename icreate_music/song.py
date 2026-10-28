@@ -10,7 +10,8 @@ from . import theory
 from .synth import (INSTRUMENTS, DRUMS, midi_to_freq, pan_gains, reverb_ir,
                     convolve, chorus, delay, compress, soft_clip, normalize,
                     fade, lowpass, highpass, env_adsr)
-from .voice import sing_phrase, VOICES, VOICE_LABELS
+from .voice import (sing_phrase, VOICES, VOICE_LABELS, PROFILE_PARAMS,
+                    PROFILE_META, all_voices)
 
 # --------------------------------------------------------------------------
 # genres
@@ -362,7 +363,7 @@ def render(params, progress=None):
     sections = build_arrangement(genre, target_bars)
 
     voice = params.get("voice", "female")
-    if voice not in VOICES:
+    if voice not in VOICES and voice not in PROFILE_PARAMS:
         voice = "female"
     want_vocal = bool(params.get("vocal", g["vocal"]))
     lyrics = (params.get("lyrics") or "").strip()
@@ -402,7 +403,17 @@ def render(params, progress=None):
         if not chords:
             break
         # melody register
-        centre = 69 if voice in ("female", "female_high", "child") else 57
+        if voice in PROFILE_META:
+            # sing where this singer actually lives
+            centre = int(round(PROFILE_META[voice].get("pitch_center_midi", 64)))
+            lo_f = PROFILE_META[voice].get("f0_p10")
+            hi_f = PROFILE_META[voice].get("f0_p90")
+            if lo_f and hi_f:
+                lo_m = int(round(69 + 12 * np.log2(lo_f / 440.0)))
+                hi_m = int(round(69 + 12 * np.log2(hi_f / 440.0)))
+                centre = int(round((lo_m + hi_m) / 2.0))
+        else:
+            centre = 69 if voice in ("female", "female_high", "child") else 57
         centre += 12 * voice_octave
         lo, hi = centre - 9, centre + 10
         mel_density = 0.42 + 0.5 * energy
@@ -593,7 +604,7 @@ def render(params, progress=None):
                 seed=seed, seconds=round(mixd.shape[1] / sr, 2),
                 bars=total_bars, progression=progression,
                 sections=[(s["name"], s["bars"]) for s in sections],
-                voice=(VOICE_LABELS.get(voice, voice) if want_vocal else "instrumental"),
+                voice=(all_voices().get(voice, voice) if want_vocal else "instrumental"),
                 voice_key=voice, vocal=want_vocal,
                 instruments=dict(keys=keys_inst, pad=pad_inst, bass=bass_inst,
                                  arp=arp_inst, lead=lead_inst),

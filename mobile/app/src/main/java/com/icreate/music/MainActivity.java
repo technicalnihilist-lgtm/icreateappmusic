@@ -1,7 +1,12 @@
 package com.icreate.music;
 
+import android.app.Activity;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 import android.view.ViewGroup;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -23,8 +28,10 @@ import java.net.Socket;
 public class MainActivity extends AppCompatActivity {
 
     private static final int PORT = 8000;
+    private static final int FILE_PICKER = 4242;
     private WebView web;
     private volatile String error = null;
+    private ValueCallback<Uri[]> pendingFiles;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -37,6 +44,29 @@ public class MainActivity extends AppCompatActivity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setAllowFileAccess(false);
         web.setWebViewClient(new WebViewClient());
+        // without this, the "choose a song" button inside the web UI does nothing
+        web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onShowFileChooser(WebView view,
+                                             ValueCallback<Uri[]> callback,
+                                             FileChooserParams params) {
+                if (pendingFiles != null) {
+                    pendingFiles.onReceiveValue(null);
+                }
+                pendingFiles = callback;
+                try {
+                    Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType("audio/*");
+                    startActivityForResult(Intent.createChooser(intent, "Pick a song"),
+                                           FILE_PICKER);
+                    return true;
+                } catch (Exception e) {
+                    pendingFiles = null;
+                    return false;
+                }
+            }
+        });
         web.setBackgroundColor(0xFF0B0D12);
         setContentView(web, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -95,6 +125,19 @@ public class MainActivity extends AppCompatActivity {
         } finally {
             try { sock.close(); } catch (Exception ignored) { }
         }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        if (requestCode == FILE_PICKER) {
+            if (pendingFiles != null) {
+                pendingFiles.onReceiveValue(
+                        WebChromeClient.FileChooserParams.parseResult(resultCode, data));
+                pendingFiles = null;
+            }
+            return;
+        }
+        super.onActivityResult(requestCode, resultCode, data);
     }
 
     @Override

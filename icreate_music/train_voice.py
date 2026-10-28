@@ -71,8 +71,9 @@ def f0_track(x, sr=SR, fmin=70.0, fmax=1000.0, win=2048, hop=441, with_peak=Fals
         if seg.shape[1] < 2:
             continue
         top = np.max(seg, axis=1, keepdims=True)
-        # smallest lag that is nearly as strong as the best one: this picks the
-        # true period instead of its double, which is the usual octave error
+        # first lag nearly as strong as the best: avoids the classic double-period
+        # octave-down error. Register is anchored by the cepstral estimate, so
+        # this track only needs to supply range and vibrato.
         strong = seg >= (0.88 * top)
         k = np.argmax(strong, axis=1)
         peakv[s:e] = seg[np.arange(seg.shape[0]), k]
@@ -86,12 +87,38 @@ def f0_track(x, sr=SR, fmin=70.0, fmax=1000.0, win=2048, hop=441, with_peak=Fals
         lag = kk + np.clip(shift, -1, 1)
         f0[s:e] = sr / np.maximum(lag, 1)
 
-    gate = max(0.002, 0.20 * float(np.median(rms[rms > 0]))) if np.any(rms > 0) else 0.002
-    voiced = (peakv > 0.25) & (rms > gate)
+    gate = max(0.002, 0.12 * float(np.median(rms[rms > 0]))) if np.any(rms > 0) else 0.002
+    voiced = (peakv > 0.18) & (rms > gate)
     f0 = np.where(voiced, f0, 0.0)
     if with_peak:
         return f0, voiced, rms, peakv
     return f0, voiced, rms
+
+
+def cepstral_f0(x, sr=SR, voiced=None, win=2048, hop=441):
+    """Register estimate from the averaged spectrum's harmonic comb.
+
+    Per-frame autocorrelation picks the wrong octave often enough to matter
+    (a 220 Hz voice reading as 440), but the comb in the mean spectrum of the
+    voiced frames is unambiguous.
+    """
+    n = x.size
+    frames = 1 + max(0, (n - win) // hop)
+    if frames < 4:
+        return 0.0
+    idx = np.arange(win)[None, :] + hop * np.arange(frames)[:, None]
+    S = np.abs(np.fft.rfft(x[idx] * np.hanning(win).astype(np.float32), axis=1))
+    v = voiced[:frames] if (voiced is not None and voiced.size >= frames) else np.ones(frames, bool)
+    if np.sum(v) < 4:
+        v = np.ones(frames, bool)
+    P = S[v].mean(axis=0) + 1e-9
+    ceps = np.fft.irfft(np.log(P))
+    qlo, qhi = int(sr / 900.0), int(sr / 60.0)
+    seg = ceps[qlo:min(qhi, ceps.size - 1)]
+    if seg.size < 3:
+        return 0.0
+    k = int(np.argmax(seg)) + qlo
+    return float(sr / max(k, 1))
 
 
 def _runs(mask):
@@ -220,19 +247,23 @@ def analyse_vocal(x, sr=SR):
         raise RuntimeError(
             "not enough sung pitch found - try a cleaner vocal or a longer excerpt")
 
-    # octave-fold outliers before taking statistics
-    med = float(np.median(good))
+    # Register comes from the cepstral comb, which does not confuse octaves;
+    # the frame track only supplies range and vibrato, folded onto that anchor.
+    med = cepstral_f0(x, sr, voiced)
+    if med <= 0:
+        med = float(np.median(good))
     folded = []
     for v in good:
-        r = v / med
-        if r > 1.8:
-            v = v / 2.0
-        elif r < 0.55:
-            v = v * 2.0
+        ratio = np.log2(max(med, 1.0) / max(v, 1.0))
+        if abs(ratio) > 0.55:          # a real octave error, not natural movement
+            v = v * (2.0 ** int(np.round(ratio)))
         folded.append(v)
     folded = np.array(folded)
-    med = float(np.median(folded))
     p10, p90 = np.percentile(folded, [10, 90])
+    # A collapsed range (octave folding can do this on deep voices) would make
+    # every new melody monotone; fall back to a singable default width.
+    if 12.0 * np.log2(max(p90, 1) / max(p10, 1)) < 4.0:
+        p10, p90 = med / (2 ** (5 / 12.0)), med * (2 ** (5 / 12.0))
 
     rate, depth = _vibrato(f0, voiced, 441, sr)
     sp = _spectral(x, sr, voiced)
@@ -315,15 +346,32 @@ def train_voice(source, name, base="songs", sr=SR, mode="center",
         stems = separate.separate_demucs(audio=audio, sr=sr, progress=prog) \
             if False else separate.separate_demucs(source, sr=sr, progress=prog)
     else:
-        prog(0.15, "separating vocals from the music")
-        stems = separate.separate(audio=audio, sr=sr, mode=mode, progress=prog)
+        # Dense mixes sometimes leave too little voice after a centre-only
+        # split, so try the repetition-based mode as a fallback before giving up.
+        modes = [mode] if mode != "center" else ["center", "median"]
+        stems = None
+        profile = None
+        last_err = None
+        for m in modes:
+            prog(0.15, "separating vocals from the music (%s)" % m)
+            stems = separate.separate(audio=audio, sr=sr, mode=m, progress=prog)
+            if not np.any(stems["vocals"]):
+                last_err = RuntimeError("no vocal could be extracted from this file")
+                continue
+            prog(0.8, "analysing the singer")
+            try:
+                profile = analyse_vocal(stems["vocals"], sr)
+                break
+            except RuntimeError as exc:
+                last_err = exc
+                continue
+        if profile is None:
+            raise RuntimeError(
+                "%s - this mix may be too dense or mostly instrumental. "
+                "Try a longer excerpt, a cleaner recording, or install Demucs "
+                "for stronger separation." % (last_err or "training failed"))
 
     vocal = stems["vocals"]
-    if not np.any(vocal):
-        raise RuntimeError("no vocal could be extracted from this file")
-
-    prog(0.8, "analysing the singer")
-    profile = analyse_vocal(vocal, sr)
     profile.update(name=name, slug=slug(name), source=src_name,
                    created=time.strftime("%Y-%m-%d %H:%M"),
                    separation=stems.get("mode", mode))

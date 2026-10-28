@@ -1,0 +1,19 @@
+# iCreate Music - hard requirements
+# The generator itself needs ONLY numpy. Everything else is optional.
+numpy>=1.21
+
+# --- optional: mp3 export (also needs the ffmpeg binary on PATH) ----------
+# nothing to install here, just ffmpeg
+
+# --- optional: neural lab (audio-encoders-pytorch codec) ------------------
+# big download (~2-3 GB with CUDA torch), not needed to make music
+# torch>=2.0
+# torchaudio>=2.0
+# audio-encoders-pytorch>=0.0.22
+# audio-data-pytorch
+# pyloudnorm
+
+# --- optional: true neural music generation (see README "Going further") --
+# transformers>=4.40
+# scipy
+# accelerate

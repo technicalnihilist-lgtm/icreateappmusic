@@ -1,0 +1,40 @@
+{
+  "title": "Embers",
+  "genre": "cinematic",
+  "genre_label": "Cinematic / score",
+  "bpm": 78,
+  "key": "A minor",
+  "root": 9,
+  "scale": "minor",
+  "seed": 5,
+  "seconds": 49.15,
+  "bars": 15,
+  "progression": [
+    "i",
+    "III",
+    "VII",
+    "VI"
+  ],
+  "sections": [
+    [
+      "intro",
+      8
+    ],
+    [
+      "verse",
+      7
+    ]
+  ],
+  "voice": "instrumental",
+  "voice_key": "female",
+  "vocal": false,
+  "instruments": {
+    "keys": "piano",
+    "pad": "strings",
+    "bass": "sub",
+    "arp": "bell",
+    "lead": "strings"
+  },
+  "lyrics": "",
+  "file": "3_cinematic_5.wav"
+}

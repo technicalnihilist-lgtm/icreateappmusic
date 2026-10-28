@@ -8,7 +8,7 @@ import os
 import sys
 import time
 
-from . import export, song, theory
+from . import export, song, theory, train_voice
 from .synth import INSTRUMENTS
 from .voice import VOICE_LABELS
 
@@ -28,8 +28,8 @@ def build_parser():
     p.add_argument("--key", default="", help="root note, e.g. C, F#, A")
     p.add_argument("--scale", default="", help="scale/mode, e.g. minor, dorian")
     p.add_argument("--seed", type=int, default=0, help="seed (0 = random)")
-    p.add_argument("--voice", default="female", choices=sorted(VOICE_LABELS),
-                   help="singing voice preset")
+    p.add_argument("--voice", default="female",
+                   help="singing voice: a preset, or a trained profile slug")
     p.add_argument("--voice-octave", type=int, default=0, help="-1 / 0 / +1")
     p.add_argument("--instrumental", action="store_true", help="no vocals")
     p.add_argument("--lyrics", default="", help="text to sing (or a file path)")
@@ -43,6 +43,12 @@ def build_parser():
     p.add_argument("--sr", type=int, default=44100, help="sample rate")
     p.add_argument("--mp3", action="store_true", help="also convert to mp3 (needs ffmpeg)")
     p.add_argument("--list", action="store_true", help="list genres, voices, instruments")
+    p.add_argument("--list-voices", action="store_true", help="list trained voice profiles")
+    p.add_argument("--train", default="", metavar="SONG",
+                   help="train a voice from a song file (mp3/wav), then exit")
+    p.add_argument("--name", default="", help="name for the trained voice")
+    p.add_argument("--library", default="songs",
+                   help="folder holding trained voices and stems (default: songs)")
     p.add_argument("--quiet", action="store_true")
     return p
 
@@ -58,6 +64,10 @@ def _key_to_int(text):
 
 
 def make_one(args, seed, out_path, show=True):
+    try:
+        train_voice.load_all_into_engine(args.library)
+    except Exception:
+        pass
     lyrics = args.lyrics
     if lyrics and os.path.exists(lyrics):
         with open(lyrics, "r", encoding="utf-8") as f:
@@ -94,6 +104,38 @@ def make_one(args, seed, out_path, show=True):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.train:
+        name = args.name or os.path.splitext(os.path.basename(args.train))[0]
+        print("iCreate Music - training voice \"%s\" from %s" % (name, args.train))
+        prof = train_voice.train_voice(
+            args.train, name, base=args.library,
+            progress=None if args.quiet else _progress)
+        if not args.quiet:
+            sys.stdout.write("\r" + " " * 40 + "\r")
+        print("  register      %.1f Hz (%.1f semitones)"
+              % (prof["f0_median"], prof["semitone_range"]))
+        print("  vocal tract   %.2f   vibrato %.1f Hz   breath %.2f   bright %.2f"
+              % (prof["formant_scale"], prof["vibrato_rate"], prof["breath"], prof["bright"]))
+        print("  saved         %s" % prof["path"])
+        if prof.get("preview"):
+            print("  preview       %s" % prof["preview"])
+        if prof.get("stems"):
+            print("  stems         %s" % prof["stems"])
+        print("\n  use it with:  --voice %s" % prof["slug"])
+        return 0
+
+    if args.list_voices:
+        profs = train_voice.list_profiles(args.library)
+        if not profs:
+            print("No trained voices yet. Train one with:\n"
+                  "  python -m icreate_music train <song.mp3> --name \"Artist\"")
+            return 0
+        for pr in profs:
+            print("%-22s %-24s f0 %6.1f Hz  range %4.1f semis  created %s"
+                  % (pr.get("slug", "?"), pr.get("name", "?"), pr.get("f0_median", 0),
+                     pr.get("semitone_range", 0), pr.get("created", "")))
+        return 0
+
     if args.list:
         print("Genres:")
         for k in sorted(song.GENRES):

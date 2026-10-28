@@ -117,6 +117,61 @@ Honest limits: this is formant synthesis, so it sounds like a synthetic singer
 (think early vocaloid / vocoder-adjacent), not a recorded human. Intelligibility
 is approximate — it reads as a voice singing words rather than a studio vocal.
 
+## Train a voice from a song
+
+Put in any song — an artist's track, your own recording — and the app will
+split it, study the singer, and add that voice to the list you can generate
+with. All local.
+
+```bash
+# from the terminal
+python -m icreate_music train song.mp3 --name "Artist One"
+python -m icreate_music cli --list-voices
+python -m icreate_music cli --genre pop --voice artist-one --lyrics "new words here"
+```
+
+In the app: the **Train a voice from a song** card, top right — pick a file,
+name it, press *Separate & train*. You get a preview of the voice, the isolated
+stems, and the profile appears in the Voice dropdown.
+
+What actually happens:
+
+1. **Separation** (`separate.py`) — vocals vs music. Lead vocals sit dead centre
+   in a mix, so a mid/side mask plus a 120 Hz–9 kHz band isolates them. Measured
+   against a known vocal stem this scores ~2–2.7 dB SI-SDR: enough to profile a
+   voice, not enough for a karaoke track. Install Demucs (`pip install demucs`)
+   and the app uses it automatically for studio-grade stems.
+2. **Analysis** (`train_voice.py`) — autocorrelation pitch tracking, vibrato rate,
+   vocal-tract size from cepstrally-smoothed formants, breathiness from
+   harmonic-to-noise ratio, brightness from pitch-normalised spectral centroid.
+3. **Profile** — saved as JSON in `songs/voices/`, then registered with the
+   synthesiser so `--voice <slug>` sings with it, in that singer's register.
+
+**How close is it?** Measured against a voice whose true settings were known:
+
+| feature | recovered | truth | error |
+|---|---|---|---|
+| vocal-tract scale | 1.13 | 1.16 | −3% |
+| register (median f0) | 401 Hz | 400 Hz | +0.3% |
+| vibrato rate | 6.9 Hz | 5.6 Hz | +23% |
+| brightness | 1.19 | 1.05 | +13% |
+| breathiness | 0.09 | 0.12 | −25% |
+
+From a *separated* stem (not a clean one) expect more drift — roughly −14% on
+vocal-tract size and an over-estimate of breathiness, because instrumental bleed
+lowers the harmonic-to-noise ratio. Vibrato *depth* is not reliably separable
+from note-level pitch movement, so it stays at a natural default rather than a
+made-up value.
+
+Be clear-eyed about the ceiling: this matches the **timbre family and the
+mannerisms**, not the identity. It is not neural voice cloning. RVC or So-VITS
+reproduce a specific human voice far more convincingly, need GBs of weights and
+a GPU, and — this part matters — need the singer's consent. Cloning a real
+artist's voice without permission is illegal in many jurisdictions, including
+under India's IT Rules and personality rights, and it is not what this feature
+is for. Use it on your own voice, on voices you have rights to, or as a
+stylistic starting point.
+
 ## Instruments
 
 `piano` · `epiano` · `guitar` · `pluck` · `pad` · `strings` · `brass` · `lead` ·

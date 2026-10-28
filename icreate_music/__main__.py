@@ -12,6 +12,8 @@ def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("cli", "generate", "gen"):
         return cli.main(argv[1:])
+    if argv and argv[0] == "train":
+        return cli.main(["--train"] + argv[1:])
     return webapp.main(argv)
 
 

@@ -40,6 +40,46 @@ VOICES = {
     "whisper":     (1.06, 5.0, 0.0060, 0.85, 0.95, 1),
 }
 
+# Trained voice profiles, registered at runtime by train_voice.py
+PROFILE_PARAMS = {}
+PROFILE_LABELS = {}
+PROFILE_META = {}
+
+
+def register_profile(name, params):
+    """Register a trained profile. Accepts a profile dict or a param tuple."""
+    if isinstance(params, dict):
+        tup = (float(params.get("formant_scale", 1.0)),
+               float(params.get("vibrato_rate", 5.4)),
+               float(params.get("vibrato_depth", 0.005)),
+               float(params.get("breath", 0.10)),
+               float(params.get("bright", 1.0)), 1)
+        label = params.get("name") or name
+        PROFILE_META[name] = params
+    else:
+        tup = tuple(params)
+        label = name
+    PROFILE_PARAMS[name] = tup
+    PROFILE_LABELS[name] = label
+    return tup
+
+
+def resolve_voice(voice):
+    """Built-in preset, trained profile, or fall back to female."""
+    if voice in VOICES:
+        return VOICES[voice]
+    if voice in PROFILE_PARAMS:
+        return PROFILE_PARAMS[voice]
+    return VOICES["female"]
+
+
+def all_voices():
+    d = dict(VOICE_LABELS)
+    for k, label in PROFILE_LABELS.items():
+        d[k] = "Trained: %s" % label
+    return d
+
+
 VOICE_LABELS = {
     "male": "Male (warm)",
     "male_deep": "Male (deep)",
@@ -147,7 +187,7 @@ def sing_note(freq, dur, sr, vowel="a", onset="none", voice="female",
               vel=1.0, rng=None, glide_from=None, legato=False):
     """Render one sung note. Returns mono float32."""
     rng = rng or np.random.default_rng(0)
-    fscale, vrate, vdepth, breath, bright, stack = VOICES.get(voice, VOICES["female"])
+    fscale, vrate, vdepth, breath, bright, stack = resolve_voice(voice)
     dur = max(0.05, float(dur))
     n = int((dur + 0.18) * sr)
     formants = VOWELS.get(vowel, VOWELS["uh"])

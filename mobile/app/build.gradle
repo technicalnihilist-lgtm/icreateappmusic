@@ -1,0 +1,47 @@
+plugins {
+    id 'com.android.application' version '8.5.2'
+    id 'com.chaquo.python' version '16.0.0'
+}
+
+android {
+    namespace "com.icreate.music"
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.icreate.music"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+        ndk {
+            // phones only: keeps the APK small
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version "3.11"
+        pip {
+            install "numpy"
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.appcompat:appcompat:1.7.0"
+    implementation "androidx.webkit:webkit:1.11.0"
+}

@@ -9,6 +9,9 @@ on:
       - 'icreate_music/**'
       - '.github/workflows/android.yml'
 
+permissions:
+  contents: write
+
 jobs:
   apk:
     runs-on: ubuntu-latest
@@ -53,3 +56,23 @@ jobs:
           name: icreate-music-apk
           path: dist/icreate-music.apk
           if-no-files-found: error
+
+      # Keeps one rolling release so the download URL never changes:
+      # https://github.com/<owner>/<repo>/releases/latest/download/icreate-music.apk
+      - name: Publish to rolling release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk-latest
+          name: iCreate Music — APK (latest)
+          body: |
+            Debug-signed APK, built from commit ${{ github.sha }}.
+
+            Bundles CPython 3.11 + numpy + the iCreate Music engine, so songs are
+            rendered on the device with no server and no network.
+
+            Install: enable "install unknown apps" for your browser/file manager,
+            open the APK, tap Install. First launch takes 10–30 s while Python
+            unpacks.
+          files: dist/icreate-music.apk
+          make_latest: true

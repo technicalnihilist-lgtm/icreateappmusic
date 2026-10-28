@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- iC mark: violet-to-teal gradient rounded square with two sound bars -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:pathData="M30,30 h48 a10,10 0 0 1 10,10 v28 a10,10 0 0 1 -10,10 h-48 a10,10 0 0 1 -10,-10 v-28 a10,10 0 0 1 10,-10 z">
+        <aapt:attr xmlns:aapt="http://schemas.android.com/aapt" name="android:fillColor">
+            <gradient
+                android:startX="20" android:startY="28"
+                android:endX="88" android:endY="80"
+                android:type="linear">
+                <item android:offset="0" android:color="#7C5CFF" />
+                <item android:offset="1" android:color="#00D3A7" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:pathData="M40,46 h4 a2,2 0 0 1 2,2 v12 a2,2 0 0 1 -2,2 h-4 a2,2 0 0 1 -2,-2 v-12 a2,2 0 0 1 2,-2 z"
+        android:fillColor="#0B0D12" />
+    <path
+        android:pathData="M52,40 h4 a2,2 0 0 1 2,2 v18 a2,2 0 0 1 -2,2 h-4 a2,2 0 0 1 -2,-2 v-18 a2,2 0 0 1 2,-2 z"
+        android:fillColor="#0B0D12" />
+    <path
+        android:pathData="M64,50 h4 a2,2 0 0 1 2,2 v8 a2,2 0 0 1 -2,2 h-4 a2,2 0 0 1 -2,-2 v-8 a2,2 0 0 1 2,-2 z"
+        android:fillColor="#0B0D12" />
+</vector>

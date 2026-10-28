@@ -1,0 +1,44 @@
+{
+  "title": "Signal",
+  "genre": "pop",
+  "genre_label": "Pop",
+  "bpm": 105,
+  "key": "A minor",
+  "root": 9,
+  "scale": "minor",
+  "seed": 77,
+  "seconds": 48.71,
+  "bars": 20,
+  "progression": [
+    "i",
+    "VI",
+    "iv",
+    "V"
+  ],
+  "sections": [
+    [
+      "intro",
+      4
+    ],
+    [
+      "verse",
+      8
+    ],
+    [
+      "chorus",
+      8
+    ]
+  ],
+  "voice": "Male (warm)",
+  "voice_key": "male",
+  "vocal": true,
+  "instruments": {
+    "keys": "piano",
+    "pad": "strings",
+    "bass": "bass",
+    "arp": "pluck",
+    "lead": "bell"
+  },
+  "lyrics": "i will carry you through the night",
+  "file": "2_pop_77.wav"
+}

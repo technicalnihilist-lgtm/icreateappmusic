@@ -1,0 +1,44 @@
+{
+  "title": "Signal",
+  "genre": "lofi",
+  "genre_label": "Lo-fi / chill",
+  "bpm": 76,
+  "key": "G# dorian",
+  "root": 8,
+  "scale": "dorian",
+  "seed": 2024,
+  "seconds": 47.21,
+  "bars": 14,
+  "progression": [
+    "i",
+    "bVII",
+    "IV",
+    "i"
+  ],
+  "sections": [
+    [
+      "intro",
+      4
+    ],
+    [
+      "verse",
+      8
+    ],
+    [
+      "chorus",
+      2
+    ]
+  ],
+  "voice": "Female (natural)",
+  "voice_key": "female",
+  "vocal": true,
+  "instruments": {
+    "keys": "epiano",
+    "pad": "pad",
+    "bass": "bass",
+    "arp": "pluck",
+    "lead": null
+  },
+  "lyrics": "city lights are calling me home",
+  "file": "1_lofi_2024.wav"
+}

@@ -13,7 +13,8 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-from . import export, song, theory
+from . import export, song, theory, train_voice
+from .voice import all_voices
 from .synth import INSTRUMENTS
 from .voice import VOICE_LABELS
 
@@ -71,6 +72,24 @@ def _run_job(job_id, params, out_dir, sr):
             JOBS[job_id].update(status="done", progress=1.0, message="ready",
                                 result=info)
     except Exception as exc:  # noqa: BLE001 - surface the error to the UI
+        import traceback
+        traceback.print_exc()
+        with JOBS_LOCK:
+            JOBS[job_id].update(status="error", message=str(exc))
+
+
+def _run_train_job(job_id, path, name, out_dir, sr):
+    def progress(pct, msg):
+        with JOBS_LOCK:
+            JOBS[job_id].update(progress=pct, message=msg)
+
+    try:
+        profile = train_voice.train_voice(path, name, base=out_dir, sr=sr,
+                                          progress=progress)
+        with JOBS_LOCK:
+            JOBS[job_id].update(status="done", progress=1.0, message="voice ready",
+                                result=profile)
+    except Exception as exc:  # noqa: BLE001
         import traceback
         traceback.print_exc()
         with JOBS_LOCK:
@@ -197,6 +216,24 @@ details summary{cursor:pointer;color:var(--dim);font-size:12px;margin-top:14px}
     </div>
   </div>
   <div>
+    <div class="card" style="margin-bottom:18px">
+      <h2>Train a voice from a song</h2>
+      <div class="grid">
+        <div><label>Song file (mp3 / wav / m4a)</label>
+          <input type="file" id="vfile" accept="audio/*" style="font-size:12px;padding:6px"></div>
+        <div><label>Voice name</label>
+          <input type="text" id="vname" placeholder="e.g. Artist One"></div>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn" id="train">Separate &amp; train</button>
+      </div>
+      <div class="bar" id="tbar"><i></i></div>
+      <div class="msg" id="tmsg"></div>
+      <div id="tres"></div>
+      <div class="hint">The song is split into vocals and music locally, the singer is
+      measured (register, vibrato, vocal-tract size, breathiness), and the voice shows
+      up in the Voice list. Files never leave this machine.</div>
+    </div>
     <div class="card">
       <h2>Session library</h2>
       <div class="list" id="lib"><div class="hint">Nothing generated yet.</div></div>
@@ -307,6 +344,62 @@ window.play = i => {
   $('#dljson').href='/audio/'+encodeURIComponent(info.file.replace(/\.wav$/,'.json'));
   $('#dljson').setAttribute('download', info.file.replace(/\.wav$/,'.json'));
 };
+
+async function refreshVoices(){
+  const vs = await (await fetch('/api/voices')).json();
+  const sel = $('#voice'), cur = sel.value;
+  sel.innerHTML = '';
+  for (const [k,lab] of Object.entries(vs)) sel.add(new Option(lab, k));
+  if (cur && vs[cur]) sel.value = cur;
+}
+
+$('#train').onclick = async () => {
+  const f = $('#vfile').files[0];
+  if (!f){ $('#tmsg').textContent = 'choose a song file first'; return; }
+  const name = ($('#vname').value || 'My voice').trim();
+  const btn = $('#train'); btn.disabled = true; btn.textContent = 'Working...';
+  $('#tbar').style.display = 'block'; $('#tbar>i').style.width = '4%';
+  $('#tmsg').textContent = 'uploading ' + f.name;
+  $('#tres').innerHTML = '';
+  try {
+    const buf = await f.arrayBuffer();
+    const r = await fetch('/api/train?name=' + encodeURIComponent(name) +
+                          '&filename=' + encodeURIComponent(f.name),
+                          {method:'POST', headers:{'Content-Type':'application/octet-stream'}, body: buf});
+    const {job_id} = await r.json();
+    const pollT = setInterval(async () => {
+      const st = await (await fetch('/api/job/' + job_id)).json();
+      $('#tbar>i').style.width = Math.round((st.progress||0)*100) + '%';
+      $('#tmsg').textContent = st.message || '';
+      if (st.status === 'done'){ clearInterval(pollT); trained(st.result); }
+      if (st.status === 'error'){
+        clearInterval(pollT); btn.disabled = false; btn.textContent = 'Separate & train';
+        $('#tbar').style.display = 'none';
+        $('#tmsg').textContent = st.message; $('#tmsg').className = 'msg err';
+      }
+    }, 600);
+  } catch(e){
+    btn.disabled = false; btn.textContent = 'Separate & train';
+    $('#tmsg').textContent = e.message; $('#tmsg').className = 'msg err';
+  }
+};
+
+function trained(p){
+  const btn = $('#train'); btn.disabled = false; btn.textContent = 'Separate & train';
+  $('#tbar').style.display = 'none';
+  $('#tmsg').textContent = '';
+  $('#tmsg').className = 'msg';
+  $('#tres').innerHTML = `
+    <div style="margin-top:10px">
+      ${[['register', p.f0_median + ' Hz'], ['range', p.semitone_range + ' semis'],
+         ['vocal tract', p.formant_scale], ['vibrato', p.vibrato_rate + ' Hz'],
+         ['breath', p.breath], ['bright', p.bright]]
+        .map(([k,v]) => `<span class="chip">${k} <b>${v}</b></span>`).join('')}
+    </div>
+    <div style="margin-top:8px"><a class="dl" href="/audio/voices/${p.slug}_preview.wav" download>hear the trained voice</a></div>`;
+  refreshVoices().then(() => { if (p.slug) $('#voice').value = p.slug; });
+}
+
 boot().then(async () => {
   await loadLib();
   const want = new URLSearchParams(location.search).get('song');
@@ -355,6 +448,13 @@ class Handler(BaseHTTPRequestHandler):
                 "scales": sorted(theory.SCALES),
                 "keys": theory.NOTE_NAMES,
             })
+        if path == "/api/voices":
+            return self._send(200, all_voices())
+        if path == "/api/profiles":
+            try:
+                return self._send(200, train_voice.list_profiles(self.out_dir))
+            except Exception:
+                return self._send(200, [])
         if path == "/api/library":
             with LIB_LOCK:
                 return self._send(200, LIBRARY[:50])
@@ -365,8 +465,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, job)
         if path.startswith("/audio/"):
             name = unquote(path[len("/audio/"):])
-            safe = os.path.basename(name)
-            full = os.path.join(self.out_dir, safe)
+            rel = os.path.normpath(name).lstrip("/\\")
+            full = os.path.abspath(os.path.join(self.out_dir, rel))
+            root = os.path.abspath(self.out_dir)
+            if not (full == root or full.startswith(root + os.sep)):
+                return self._send(403, {"error": "outside the library"})
+            safe = os.path.basename(full)
             if not os.path.isfile(full):
                 return self._send(404, {"error": "not found"})
             ctype = "audio/wav"
@@ -380,7 +484,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/api/train":
+            return self._handle_train(parsed)
         if path != "/api/generate":
             return self._send(404, {"error": "not found"})
         try:
@@ -410,11 +517,49 @@ class Handler(BaseHTTPRequestHandler):
         t.start()
         return self._send(200, {"job_id": jid})
 
+    def _handle_train(self, parsed):
+        from urllib.parse import parse_qs
+        q = parse_qs(parsed.query)
+        name = (q.get("name", ["voice"])[0] or "voice").strip()[:40]
+        fname = os.path.basename(q.get("filename", ["upload.wav"])[0]) or "upload.wav"
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            return self._send(400, {"error": "bad length"})
+        if length <= 0:
+            return self._send(400, {"error": "empty upload"})
+        if length > 200 * 1024 * 1024:
+            return self._send(413, {"error": "file too large (200 MB max)"})
+        updir = os.path.join(self.out_dir, "uploads")
+        os.makedirs(updir, exist_ok=True)
+        safe = export.safe_name(os.path.splitext(fname)[0]) + os.path.splitext(fname)[1].lower()
+        dest = os.path.join(updir, safe)
+        remaining = length
+        with open(dest, "wb") as f:
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    break
+                f.write(chunk)
+                remaining -= len(chunk)
+        jid = uuid.uuid4().hex[:12]
+        with JOBS_LOCK:
+            JOBS[jid] = {"status": "running", "progress": 0.02,
+                         "message": "reading the song"}
+        t = threading.Thread(target=_run_train_job,
+                             args=(jid, dest, name, self.out_dir, self.sr), daemon=True)
+        t.start()
+        return self._send(200, {"job_id": jid, "saved": safe})
+
 
 def serve(out_dir="songs", host="127.0.0.1", port=7860, sr=44100, open_browser=True,
           quiet=False):
     os.makedirs(out_dir, exist_ok=True)
     _load_library(out_dir)
+    try:
+        train_voice.load_all_into_engine(out_dir)
+    except Exception:
+        pass
     Handler.out_dir = out_dir
     Handler.sr = sr
     httpd = ThreadingHTTPServer((host, port), Handler)

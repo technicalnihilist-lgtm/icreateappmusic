@@ -16,6 +16,17 @@ That opens the app at `http://127.0.0.1:7860`. Press **Generate song**.
 
 ---
 
+## Download the Android app
+
+[**icreate-music.apk**](https://github.com/technicalnihilist-lgtm/icreateappmusic/releases/latest/download/icreate-music.apk)
+— 49.5 MB, Android 8.0+, rebuilt automatically on every push to `main`.
+
+It bundles CPython 3.11 + numpy + this engine inside the APK, so the phone
+renders songs on-device with no server and no network. Sideload it (enable
+"install unknown apps" for your file manager), tap Install, open it. First
+launch takes 10–30 s while Python unpacks; after that it is quick. It is
+debug-signed, which is fine for personal use but not for the Play Store.
+
 ## What this actually is (read this first)
 
 There are two very different things people mean by "AI song generator", and it

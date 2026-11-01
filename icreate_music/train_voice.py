@@ -47,7 +47,10 @@ def f0_track(x, sr=SR, fmin=70.0, fmax=1000.0, win=2048, hop=441, with_peak=Fals
     x = np.asarray(x, dtype=np.float32)
     n = x.size
     if n < win:
-        return np.zeros(1), np.zeros(1, dtype=bool), np.zeros(1)
+        empty = np.zeros(1)
+        if with_peak:
+            return empty, np.zeros(1, dtype=bool), empty, empty
+        return empty, np.zeros(1, dtype=bool), empty
     frames = 1 + (n - win) // hop
     idx = np.arange(win)[None, :] + hop * np.arange(frames)[:, None]
     fr = x[idx] * np.hanning(win).astype(np.float32)
@@ -83,7 +86,9 @@ def f0_track(x, sr=SR, fmin=70.0, fmax=1000.0, win=2048, hop=441, with_peak=Fals
         b = acn[np.arange(seg.shape[0]), np.clip(kk, 0, win - 1)]
         c = acn[np.arange(seg.shape[0]), np.clip(kk + 1, 0, win - 1)]
         denom = (a - 2 * b + c)
-        shift = np.where(np.abs(denom) > 1e-9, 0.5 * (a - c) / denom, 0.0)
+        ok = np.abs(denom) > 1e-9
+        shift = np.zeros_like(denom)
+        shift[ok] = 0.5 * (a[ok] - c[ok]) / denom[ok]
         lag = kk + np.clip(shift, -1, 1)
         f0[s:e] = sr / np.maximum(lag, 1)
 
@@ -181,8 +186,8 @@ def _spectral(x, sr, voiced, hop=441, win=2048):
     n = x.size
     frames = 1 + max(0, (n - win) // hop)
     if frames < 4:
-        return dict(centroid=REF_CENTROID, tilt=-1.0, hf_ratio=0.1,
-                    formants=[500.0, 1500.0, 2500.0])
+        return dict(centroid=REF_CENTROID_RATIO * REF_PITCH, tilt=-1.0,
+                    hf_ratio=0.1, formants=[500.0, 1500.0, 2500.0])
     idx = np.arange(win)[None, :] + hop * np.arange(frames)[:, None]
     fr = x[idx] * np.hanning(win).astype(np.float32)
     S = np.abs(np.fft.rfft(fr, axis=1))
@@ -343,8 +348,9 @@ def train_voice(source, name, base="songs", sr=SR, mode="center",
 
     if use_demucs and separate.demucs_available():
         prog(0.15, "separating with Demucs")
-        stems = separate.separate_demucs(audio=audio, sr=sr, progress=prog) \
-            if False else separate.separate_demucs(source, sr=sr, progress=prog)
+        stems = separate.separate_demucs(
+            source if isinstance(source, str) else None, sr=sr, progress=prog,
+            audio=None if isinstance(source, str) else audio)
     else:
         # Dense mixes sometimes leave too little voice after a centre-only
         # split, so try the repetition-based mode as a fallback before giving up.

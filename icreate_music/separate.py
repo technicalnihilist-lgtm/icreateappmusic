@@ -27,10 +27,17 @@ HOP = 512
 # io
 # --------------------------------------------------------------------------
 def _read_wav(path):
-    with wave.open(path, "rb") as w:
-        sr, ch, sw, n = w.getframerate(), w.getnchannels(), w.getsampwidth(), w.getnframes()
-        raw = w.readframes(n)
-    if sw == 2:
+    try:
+        with wave.open(path, "rb") as w:
+            sr, ch, sw, n = (w.getframerate(), w.getnchannels(),
+                             w.getsampwidth(), w.getnframes())
+            raw = w.readframes(n)
+    except wave.Error as exc:
+        raise ValueError("%s is not a readable wav file (%s)"
+                         % (os.path.basename(path), exc)) from None
+    if sw == 1:                       # 8-bit wav is unsigned, offset by 128
+        x = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    elif sw == 2:
         x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
     elif sw == 3:
         b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
@@ -65,13 +72,20 @@ def load_audio(path, sr=SR):
                 "%s needs ffmpeg to decode. Install it (apt install ffmpeg / "
                 "brew install ffmpeg) or convert the file to .wav first." % ext)
         tmp = tempfile.mktemp(suffix=".wav")
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path,
-                        "-ac", "2", "-ar", str(sr), tmp], check=True)
-        x, in_sr = _read_wav(tmp)
         try:
-            os.remove(tmp)
-        except OSError:
-            pass
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path,
+                            "-ac", "2", "-ar", str(sr), tmp], check=True)
+        except subprocess.CalledProcessError:
+            raise ValueError(
+                "could not decode %s - the file may be corrupt or not really "
+                "an audio file" % os.path.basename(path)) from None
+        try:
+            x, in_sr = _read_wav(tmp)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
     if in_sr != sr:
         x = np.stack([resample(ch, in_sr, sr) for ch in x])
     if x.shape[0] > 2:
@@ -97,6 +111,12 @@ def _hann(n):
 
 
 def stft(x, n_fft=N_FFT, hop=HOP):
+    """Short-time Fourier transform, (bins, frames).
+
+    Frames are gathered in chunks rather than in one shot: the (frames x n_fft)
+    index matrix and the windowed copy are what used to make separating a
+    three-minute song cost a gigabyte of RAM, and phones do not have it.
+    """
     w = _hann(n_fft)
     n = x.shape[-1]
     frames = 1 + max(0, (n - n_fft) // hop)
@@ -105,24 +125,44 @@ def stft(x, n_fft=N_FFT, hop=HOP):
         xp = np.concatenate([x, np.zeros(need, dtype=np.float32)])
     else:
         xp = x
-    idx = np.arange(n_fft)[None, :] + hop * np.arange(frames)[:, None]
-    out = np.fft.rfft(xp[idx] * w, axis=1)
-    return out.T  # (bins, frames)
+    out = np.empty((n_fft // 2 + 1, frames), dtype=np.complex64)
+    step = max(1, (1 << 21) // n_fft)          # ~2 M samples of frames in flight
+    ar = np.arange(n_fft)
+    for s in range(0, frames, step):
+        e = min(frames, s + step)
+        idx = ar[None, :] + hop * np.arange(s, e)[:, None]
+        out[:, s:e] = np.fft.rfft(xp[idx] * w, axis=1).T
+    return out
+
+
+def _overlap_add(frames_y, hop, n_fft):
+    """Sum equally spaced frames back into one signal, without a Python loop."""
+    frames = frames_y.shape[0]
+    nb = n_fft // hop
+    acc = np.zeros((frames + nb, hop), dtype=frames_y.dtype)
+    for b in range(nb):
+        acc[b:b + frames] += frames_y[:, b * hop:(b + 1) * hop]
+    return acc[:frames + nb - 1].reshape(-1)
 
 
 def istft(S, n_fft=N_FFT, hop=HOP, length=None):
     w = _hann(n_fft)
     frames = S.shape[1]
-    y = np.fft.irfft(S.T, n=n_fft, axis=1) * w
-    total = (frames - 1) * hop + n_fft
-    out = np.zeros(total, dtype=np.float32)
-    norm = np.zeros(total, dtype=np.float32)
-    for i in range(frames):
-        a = i * hop
-        out[a:a + n_fft] += y[i]
-        norm[a:a + n_fft] += w * w
-    out /= np.maximum(norm, 1e-8)
-    if length:
+    y = np.fft.irfft(S.T, n=n_fft, axis=1)
+    y *= w                                  # in place: one less full-length copy
+    if n_fft % hop == 0:
+        out = _overlap_add(y, hop, n_fft)
+        norm = _overlap_add(np.broadcast_to(w * w, y.shape), hop, n_fft)
+    else:                                   # unusual geometry: keep it simple
+        total = (frames - 1) * hop + n_fft
+        out = np.zeros(total)
+        norm = np.zeros(total)
+        for i in range(frames):
+            a = i * hop
+            out[a:a + n_fft] += y[i]
+            norm[a:a + n_fft] += w * w
+    out = (out / np.maximum(norm, 1e-8)).astype(np.float32)
+    if length is not None:
         if out.size < length:
             out = np.concatenate([out, np.zeros(length - out.size, dtype=np.float32)])
         out = out[:length]
@@ -132,10 +172,17 @@ def istft(S, n_fft=N_FFT, hop=HOP, length=None):
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
-def _median_bg(mag, win=41, block=192):
-    """Median of |STFT| across time, per bin, computed block-wise."""
+def _median_bg(mag, win=41, block=None):
+    """Median of |STFT| across time, per bin, computed block-wise.
+
+    The block size is chosen from a memory budget: the sliding window is a
+    view, but the median has to copy it, and a fixed 192-frame block of a
+    215-wide window over 1025 bins is a third of a gigabyte.
+    """
     half = win // 2
     bins, frames = mag.shape
+    if block is None:
+        block = max(1, min(192, (32 << 20) // max(1, bins * win * mag.itemsize)))
     padded = np.pad(mag, ((0, 0), (half, half)), mode="edge")
     out = np.empty_like(mag)
     view = np.lib.stride_tricks.sliding_window_view(padded, win, axis=1)
@@ -169,6 +216,10 @@ def separate(path=None, audio=None, sr=SR, mode="center", win=215, strength=1.0,
     if x.ndim == 1:
         x = np.vstack([x, x])
     n = x.shape[1]
+    if n <= 0:
+        return dict(vocals=np.zeros(0, dtype=np.float32),
+                    instrumental=np.zeros((2, 0), dtype=np.float32), sr=sr,
+                    mode=mode, vocal_energy=0.0, music_energy=0.0)
     if progress:
         progress(0.15, "analysing the mix")
 
@@ -195,6 +246,7 @@ def separate(path=None, audio=None, sr=SR, mode="center", win=215, strength=1.0,
         # centre emphasis: a voice panned to one side is almost never the lead
         mask *= (0.25 + 0.75 * _center_ratio(M, Ss))
 
+    del Ss
     # vocals do not live below ~90 Hz or above ~12 kHz
     freqs = np.fft.rfftfreq(N_FFT, 1.0 / sr)
     lo = low_hz if low_hz is not None else (120.0 if mode == "center" else 90.0)
@@ -233,8 +285,12 @@ def demucs_available():
         return False
 
 
-def separate_demucs(path, sr=SR, progress=None):
-    """Optional high-quality path: uses Demucs if it is installed."""
+def separate_demucs(path=None, sr=SR, progress=None, audio=None):
+    """Optional high-quality path: uses Demucs if it is installed.
+
+    Accepts either a file path or an already-loaded array, so training from an
+    in-memory upload does not have to round-trip through the filesystem.
+    """
     import torch
     from demucs.apply import apply_model
     from demucs.pretrained import get_model
@@ -243,7 +299,16 @@ def separate_demucs(path, sr=SR, progress=None):
         progress(0.1, "loading Demucs")
     model = get_model("htdemucs")
     model.eval()
-    x = load_audio(path, model.samplerate)
+    if audio is None:
+        x = load_audio(path, model.samplerate)
+    else:
+        x = np.asarray(audio, dtype=np.float32)
+        if x.ndim == 1:
+            x = np.vstack([x, x])
+        if x.shape[0] == 1:
+            x = np.vstack([x, x])
+        if sr != model.samplerate:
+            x = np.stack([resample(ch, sr, model.samplerate) for ch in x])
     wav = torch.from_numpy(x)[None]
     with torch.no_grad():
         out = apply_model(model, wav, split=True, progress=False)[0]

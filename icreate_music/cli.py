@@ -53,14 +53,30 @@ def build_parser():
     return p
 
 
+SEMITONES = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
+
+
 def _key_to_int(text):
-    if not text:
+    """Parse a note name ("C", "F#", "Bb") into a pitch class, or -1.
+
+    Flats used to be rewritten to sharps before lookup, which turned "Bb" into
+    "B#" -- not a note -- so every flat key silently fell back to a random key.
+    """
+    t = str(text or "").strip()
+    if not t:
         return -1
-    t = text.strip().replace("b", "#").upper()
-    names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-    flats = {"DB": "C#", "EB": "D#", "GB": "F#", "AB": "G#", "BB": "A#"}
-    t = flats.get(t, t)
-    return names.index(t) if t in names else -1
+    letter = t[0].upper()
+    if letter not in SEMITONES:
+        return -1
+    acc = t[1:2]
+    base = SEMITONES[letter]
+    if acc in ("#", "\u266f"):
+        return (base + 1) % 12
+    if acc in ("b", "\u266d"):
+        return (base - 1) % 12
+    if acc == "":
+        return base
+    return -1
 
 
 def make_one(args, seed, out_path, show=True):

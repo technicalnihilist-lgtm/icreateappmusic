@@ -1,6 +1,7 @@
 """Writing audio and metadata to disk. stdlib only (wave module)."""
 import json
 import os
+import unicodedata
 import wave
 
 import numpy as np
@@ -71,6 +72,16 @@ def write_manifest(path, info):
     return path
 
 
+def _name_char(c):
+    """Letters, digits and vowel signs survive; punctuation does not.
+
+    Combining marks have to be kept explicitly: dropping them turns
+    "\u0906\u0938\u092e\u093e\u0928" into "\u0906\u0938\u092e\u0928", which is a different word.
+    """
+    return (c.isalnum() or c in " -_"
+            or unicodedata.category(c).startswith("M"))
+
+
 def safe_name(text):
-    keep = "".join(c if (c.isalnum() or c in " -_") else "" for c in str(text))
+    keep = "".join(c if _name_char(c) else "" for c in str(text))
     return "-".join(keep.split())[:60] or "song"

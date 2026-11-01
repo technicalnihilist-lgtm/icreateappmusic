@@ -343,7 +343,12 @@ DEFAULT_SR = 44100
 
 def render(params, progress=None):
     """Render a song. Returns (stereo float32 array, info dict, stems dict)."""
-    sr = int(params.get("sr", DEFAULT_SR))
+    try:
+        sr = int(params.get("sr", DEFAULT_SR))
+    except (TypeError, ValueError):
+        sr = DEFAULT_SR
+    if sr < 8000 or sr > 192000:
+        sr = DEFAULT_SR          # nonsense rates only ever produced broken audio
     seed = int(params.get("seed") or theory.random_seed())
     rng = np.random.default_rng(seed)
     genre = params.get("genre", "pop")
@@ -358,7 +363,12 @@ def render(params, progress=None):
     scale = params.get("scale") or str(rng.choice(g["scales"]))
     spb = 60.0 / bpm
 
-    seconds = float(params.get("seconds", 90))
+    try:
+        seconds = float(params.get("seconds", 90))
+    except (TypeError, ValueError):
+        seconds = 90.0
+    if not np.isfinite(seconds):
+        seconds = 90.0
     target_bars = max(4, int(round(seconds / (4.0 * spb))))
     sections = build_arrangement(genre, target_bars)
 

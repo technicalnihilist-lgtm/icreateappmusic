@@ -10,8 +10,8 @@ samples and works with no network.
 """
 import numpy as np
 
-from .synth import (TAU, _t, lowpass, highpass, env_adsr, osc_additive,
-                    saw_partials, midi_to_freq)
+from .synth import (TAU, _t, lowpass, highpass, bandpass, env_adsr,
+                    osc_additive, saw_partials, midi_to_freq)
 
 # F1, F2, F3 in Hz for a reference (adult male) vocal tract
 VOWELS = {
@@ -220,8 +220,7 @@ def sing_note(freq, dur, sr, vowel="a", onset="none", voice="female",
     # breath / aspiration noise
     if breath > 0:
         noise = rng.normal(0, 1, n)
-        noise = highpass(noise, sr, 900)
-        noise = lowpass(noise, sr, 7000)
+        noise = bandpass(noise, sr, 900, 7000)
         x = (1.0 - breath * 0.6) * x + breath * noise * 1.4
 
     # vowel formants
@@ -243,7 +242,7 @@ def sing_note(freq, dur, sr, vowel="a", onset="none", voice="female",
             seg = lowpass(seg, sr, 3200) * 0.30
         elif onset == "fricative":
             seg = rng.normal(0, 1, cl) * np.hanning(cl)
-            seg = highpass(lowpass(seg, sr, 8000), sr, 2400) * 0.22
+            seg = bandpass(seg, sr, 2400, 8000) * 0.22
         else:  # nasal
             seg = rng.normal(0, 1, cl) * np.hanning(cl)
             seg = lowpass(seg, sr, 1200) * 0.14

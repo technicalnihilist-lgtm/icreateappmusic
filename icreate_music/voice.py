@@ -97,6 +97,9 @@ DIGRAPHS = {"oo": "oo", "ee": "i", "ea": "i", "ai": "e", "ay": "e",
             "ou": "o", "ow": "o", "oa": "o", "ie": "i", "ei": "e",
             "au": "o", "aw": "o", "oi": "o", "uy": "i"}
 
+# the glottal source's partial series, built once instead of once per note
+_GLOTTAL_PARTIALS = saw_partials(26, tilt=1.0)
+
 PLOSIVES = set("ptkbdg")
 FRICATIVES = set("sfhzvxjc")
 NASALS = set("mnlrwy")
@@ -208,14 +211,20 @@ def sing_note(freq, dur, sr, vowel="a", onset="none", voice="female",
     f_curve = f_curve * (1.0 + vib)
 
     x = np.zeros(n)
-    for s in range(stack):
+    wave = np.empty(n)              # scratch: the partial loop used to make 26
+    for s in range(stack):          # fresh arrays per stack per note
         det = 1.0 + (s - (stack - 1) / 2.0) * 0.004
         ph = TAU * np.cumsum(f_curve * det) / sr + s * 1.7
-        src = np.zeros(n)
-        for k, (ratio, amp, _d) in enumerate(saw_partials(26, tilt=1.0)):
+        for k, (ratio, amp, _d) in enumerate(_GLOTTAL_PARTIALS):
             if freq * det * ratio < sr * 0.45:
-                src += amp * np.sin(ph * ratio + k * 0.4)
-        x += src / max(1, stack)
+                np.multiply(ph, ratio, out=wave)
+                if k:
+                    np.add(wave, k * 0.4, out=wave)
+                np.sin(wave, out=wave)
+                np.multiply(wave, amp, out=wave)
+                np.add(x, wave, out=x)
+    if stack > 1:
+        x /= stack
 
     # breath / aspiration noise
     if breath > 0:
@@ -263,7 +272,9 @@ def sing_phrase(notes, sr, lyrics=None, voice="female", rng=None, legato=True):
     rng = rng or np.random.default_rng(0)
     if not notes:
         return np.zeros(0, dtype=np.float32)
-    end = max(nt["start"] + nt["dur"] for nt in notes) + 0.4
+    # a note that starts before zero is clipped into the buffer, so the end of
+    # the phrase can be negative: int() of that made a negative-length array
+    end = max(0.0, max(float(nt["start"]) + float(nt["dur"]) for nt in notes)) + 0.4
     out = np.zeros(int(end * sr) + 1, dtype=np.float32)
     syls = syllabify(lyrics) if lyrics else []
     prev_f = None

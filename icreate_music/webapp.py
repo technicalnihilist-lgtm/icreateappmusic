@@ -495,15 +495,23 @@ class Handler(BaseHTTPRequestHandler):
             params = json.loads(self.rfile.read(length) or b"{}")
         except Exception:
             return self._send(400, {"error": "bad json"})
+        if not isinstance(params, dict):
+            return self._send(400, {"error": "bad json"})
         clean = {}
-        for k, v in params.items():
-            if k in ("genre", "scale", "voice", "lyrics", "keys_inst", "pad_inst",
-                     "bass_inst", "arp_inst", "lead_inst"):
-                clean[k] = v or None
-            elif k in ("seconds", "bpm", "key", "seed", "voice_octave"):
-                clean[k] = int(float(v or 0))
-            elif k in ("vocal", "stems"):
-                clean[k] = bool(v)
+        try:
+            for k, v in params.items():
+                if k in ("genre", "scale", "voice", "lyrics", "keys_inst", "pad_inst",
+                         "bass_inst", "arp_inst", "lead_inst"):
+                    clean[k] = v or None
+                elif k in ("seconds", "bpm", "key", "seed", "voice_octave"):
+                    clean[k] = int(float(v or 0))
+                elif k in ("vocal", "stems"):
+                    clean[k] = bool(v)
+        except (TypeError, ValueError):
+            # the old code let this escape do_POST, so the socket was dropped
+            # mid-request and the page only ever saw "failed to fetch"
+            return self._send(400, {"error": "seconds, bpm, key, seed and "
+                                             "voice_octave must be numbers"})
         clean["sr"] = self.sr
         if clean.get("seconds", 90) > 300:
             clean["seconds"] = 300

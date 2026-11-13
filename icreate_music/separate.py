@@ -32,9 +32,16 @@ def _read_wav(path):
             sr, ch, sw, n = (w.getframerate(), w.getnchannels(),
                              w.getsampwidth(), w.getnframes())
             raw = w.readframes(n)
-    except wave.Error as exc:
+    except (wave.Error, EOFError, RuntimeError) as exc:
+        # a truncated or non-audio file makes the wave module raise
+        # RuntimeError() or EOFError() with an *empty* message, which used to
+        # reach the UI as a bare error with nothing to read
+        why = str(exc) or "damaged header"
         raise ValueError("%s is not a readable wav file (%s)"
-                         % (os.path.basename(path), exc)) from None
+                         % (os.path.basename(path), why)) from None
+    if sw > 0 and ch > 0 and len(raw) % (sw * ch):
+        raise ValueError("%s is truncated: %d bytes is not a whole number of "
+                         "frames" % (os.path.basename(path), len(raw)))
     if sw == 1:                       # 8-bit wav is unsigned, offset by 128
         x = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
     elif sw == 2:
@@ -53,6 +60,9 @@ def _read_wav(path):
         x = x.reshape(-1, ch).T
     else:
         x = x[None, :]
+    if sr <= 0:
+        raise ValueError("%s has a broken sample rate (%s)"
+                         % (os.path.basename(path), sr))
     return x, sr
 
 
@@ -71,15 +81,24 @@ def load_audio(path, sr=SR):
             raise RuntimeError(
                 "%s needs ffmpeg to decode. Install it (apt install ffmpeg / "
                 "brew install ffmpeg) or convert the file to .wav first." % ext)
-        tmp = tempfile.mktemp(suffix=".wav")
+        # mkstemp, not mktemp: the old call handed back a name any other
+        # process could have claimed first
+        fd, tmp = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
         try:
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path,
-                            "-ac", "2", "-ar", str(sr), tmp], check=True)
-        except subprocess.CalledProcessError:
-            raise ValueError(
-                "could not decode %s - the file may be corrupt or not really "
-                "an audio file" % os.path.basename(path)) from None
-        try:
+            try:
+                subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", path,
+                                "-ac", "2", "-ar", str(sr), tmp],
+                               check=True, timeout=600)
+            except subprocess.CalledProcessError:
+                raise ValueError(
+                    "could not decode %s - the file may be corrupt or not really "
+                    "an audio file" % os.path.basename(path)) from None
+            except subprocess.TimeoutExpired:
+                raise ValueError("%s took too long to decode (10 minutes)"
+                                 % os.path.basename(path)) from None
+            except OSError as exc:
+                raise RuntimeError("ffmpeg could not be run (%s)" % exc) from None
             x, in_sr = _read_wav(tmp)
         finally:
             try:
@@ -145,6 +164,34 @@ def _overlap_add(frames_y, hop, n_fft):
     return acc[:frames + nb - 1].reshape(-1)
 
 
+def _dewindow(out, norm):
+    """Undo the analysis window without exploding at the edges.
+
+    `norm` is the sum of squared windows per sample, and it is ~0 at the very
+    first and last samples of the buffer (a Hann window starts and ends at
+    zero). Dividing by max(norm, 1e-8) there turns whatever residual the
+    frames left behind into a full-scale click: a band-limited signal puts
+    energy at sample 0 even though the window has none. That single click used
+    to be the loudest sample of every separated vocal, so the peak limiter
+    below crushed the whole track by ~40x and the vocals came out inaudible.
+    Samples covered by less than -80 dB of window are simply muted.
+    """
+    peak = float(np.max(norm)) if norm.size else 0.0
+    if peak <= 0.0:
+        return np.zeros_like(out)
+    floor = peak * 1e-4
+    y = out / np.maximum(norm, floor)
+    y[norm < floor] = 0.0
+    # the samples that were just muted, and the tail no frame reached, would
+    # otherwise step to zero from a full-scale value: ramp both ends instead
+    edge = min(64, y.size // 2)
+    if edge > 0:
+        ramp = np.linspace(0.0, 1.0, edge, dtype=y.dtype)
+        y[:edge] *= ramp
+        y[-edge:] *= ramp[::-1]
+    return y
+
+
 def istft(S, n_fft=N_FFT, hop=HOP, length=None):
     w = _hann(n_fft)
     frames = S.shape[1]
@@ -161,7 +208,7 @@ def istft(S, n_fft=N_FFT, hop=HOP, length=None):
             a = i * hop
             out[a:a + n_fft] += y[i]
             norm[a:a + n_fft] += w * w
-    out = (out / np.maximum(norm, 1e-8)).astype(np.float32)
+    out = _dewindow(out, norm).astype(np.float32)
     if length is not None:
         if out.size < length:
             out = np.concatenate([out, np.zeros(length - out.size, dtype=np.float32)])

@@ -341,6 +341,22 @@ def _gen_chords(bars, chords, rng, style, energy):
 DEFAULT_SR = 44100
 
 
+BPM_RANGE = (20, 400)          # anything outside this is a typo, not a tempo
+
+
+def _int_param(params, key, default):
+    """Coerce one parameter that may arrive as text, None, NaN or junk.
+
+    The web API and the CLI both hand us whatever the user typed, so "C" in
+    the seed box or a blank tempo used to end the render in a ValueError
+    instead of a song.
+    """
+    try:
+        return int(float(params.get(key)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def render(params, progress=None):
     """Render a song. Returns (stereo float32 array, info dict, stems dict)."""
     try:
@@ -349,18 +365,23 @@ def render(params, progress=None):
         sr = DEFAULT_SR
     if sr < 8000 or sr > 192000:
         sr = DEFAULT_SR          # nonsense rates only ever produced broken audio
-    seed = int(params.get("seed") or theory.random_seed())
+    seed = _int_param(params, "seed", 0) or theory.random_seed()
     rng = np.random.default_rng(seed)
     genre = params.get("genre", "pop")
     if genre not in GENRES:
         genre = "pop"
     g = GENRES[genre]
 
-    bpm = int(params.get("bpm") or rng.integers(g["bpm"][0], g["bpm"][1] + 1))
-    root = int(params.get("key", -1))
-    if root < 0:
+    bpm = _int_param(params, "bpm", 0)
+    if bpm <= 0:
+        bpm = int(rng.integers(g["bpm"][0], g["bpm"][1] + 1))
+    bpm = max(BPM_RANGE[0], min(bpm, BPM_RANGE[1]))
+    root = _int_param(params, "key", -1)
+    if not 0 <= root < 12:
         root = int(rng.integers(0, 12))
     scale = params.get("scale") or str(rng.choice(g["scales"]))
+    if scale not in theory.SCALES:
+        scale = str(rng.choice(g["scales"]))
     spb = 60.0 / bpm
 
     try:
@@ -377,7 +398,7 @@ def render(params, progress=None):
         voice = "female"
     want_vocal = bool(params.get("vocal", g["vocal"]))
     lyrics = (params.get("lyrics") or "").strip()
-    voice_octave = int(params.get("voice_octave", 0))
+    voice_octave = max(-3, min(3, _int_param(params, "voice_octave", 0)))
 
     # instruments can be overridden
     keys_inst = params.get("keys_inst") or g["keys"]

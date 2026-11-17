@@ -25,10 +25,20 @@ from .synth import highpass, midi_to_freq
 SR = 44100
 
 # Measured on this synthesiser itself (formant_scale 1.0, five cardinal
-# vowels): F1 sits at 646 Hz and the spectral centroid at 3.54x the f0.
-# Using the synth as its own reference is what makes trained profiles
-# interchangeable with the built-in voices.
-REF_F1 = 646.0
+# vowels): F1 of the peak-picked envelope sits at ~825 Hz (the synthesiser's
+# own 'a' formant is at 730 Hz; the liftered envelope reads a little high) and
+# the spectral centroid at 3.82x the f0. Using the synth as its own reference
+# is what makes trained profiles interchangeable with the built-in voices.
+REF_F1 = 825.0
+# Vocal-tract size is estimated by matching the smoothed spectral envelope
+# against the synth's own neutral-vowel response (see _tract_scale), which is
+# far more reliable than reading F1: F1 is 730 Hz for 'a' and 270 Hz for 'i',
+# so F1 alone cannot tell a small vocal tract from a front vowel. Fitted on
+# five voices (0.88..1.34) x six vowel mixes x five pitches; the raw match
+# reads ~7% low and this line is the least-squares correction.
+_TRACT_FIT = (0.4545, 0.6216)
+_TRACT_GRID = np.arange(0.75, 1.55, 0.01)
+_ENV_LIFTER = 60            # cepstral samples kept: ~735 Hz of smoothing
 # both brightness measures drift with pitch, measured on the synth at 220/440 Hz
 REF_CENTROID_RATIO = 3.82
 REF_PITCH = 220.0
@@ -140,16 +150,33 @@ def _runs(mask):
 # --------------------------------------------------------------------------
 # analysis
 # --------------------------------------------------------------------------
+def _sustained(f0, voiced, frame_rate, jump=0.055):
+    """Yield stretches of voiced frames at a steady pitch.
+
+    A voiced run is not a sustained note: it runs straight through every note
+    change, and the step from one note to the next is a broadband spike in the
+    residual that the vibrato search then mistakes for a fast wobble. Splitting
+    at pitch jumps (>1 semitone between frames) took the measured vibrato rate
+    of this synth's own presets from 7.4 Hz (true 5.0) to 5.2 Hz.
+    """
+    min_len = int(0.45 * frame_rate)
+    for a, b in _runs(voiced):
+        seg = f0[a:b]
+        if seg.size < 8:
+            continue
+        cuts = np.flatnonzero(np.abs(np.diff(seg)) > jump * float(np.median(seg)))
+        bounds = [0] + [int(c) + 1 for c in cuts] + [seg.size]
+        for s, e in zip(bounds[:-1], bounds[1:]):
+            piece = seg[s:e]
+            if piece.size >= min_len and not np.any(piece <= 0):
+                yield piece
+
+
 def _vibrato(f0, voiced, hop, sr):
     """Vibrato rate (Hz) and relative depth from sustained voiced runs."""
     rates, depths = [], []
     frame_rate = sr / float(hop)
-    for a, b in _runs(voiced):
-        seg = f0[a:b]
-        if seg.size < int(0.45 * frame_rate):
-            continue
-        if np.any(seg <= 0):
-            continue
+    for seg in _sustained(f0, voiced, frame_rate):
         # drop note onsets/offsets: the glide there is not vibrato
         trim = int(0.09 * frame_rate)
         if seg.size > 2 * trim + 8:
@@ -181,13 +208,63 @@ def _vibrato(f0, voiced, hop, sr):
     return float(np.clip(rate, 3.5, 8.5)), 0.006
 
 
+def _envelope(P, q=_ENV_LIFTER):
+    """Cepstrally smoothed log spectrum: the vocal tract without the harmonics."""
+    ceps = np.fft.irfft(np.log(P + 1e-20))
+    lifter = np.zeros_like(ceps)
+    lifter[:q] = 1.0
+    lifter[-q:] = 1.0
+    return np.fft.rfft(ceps * lifter).real[:P.size]
+
+
+def _shape(v, f):
+    """Compare two log spectra by shape: zero mean, no tilt, unit length.
+
+    Removing the tilt is what makes the match about formant *positions*: the
+    glottal source's -6 dB/octave and any EQ in the recording are the same
+    curve at every scale, and would otherwise decide the answer.
+    """
+    v = v - v.mean()
+    A = np.vstack([np.ones_like(f), np.log(f)]).T
+    v = v - A @ np.linalg.lstsq(A, v, rcond=None)[0]
+    return v / (np.linalg.norm(v) + 1e-12)
+
+
+def _tract_scale(P, sr, n_fft):
+    """Vocal-tract size (1.0 = the synth's reference voice) from a mean spectrum.
+
+    Searches the synth's own formant response for the neutral vowel over a grid
+    of scales and keeps the best shape match. The vowel is held fixed on
+    purpose: letting it float lets a *different* vowel at a *different* scale
+    win, which pinned every voice at 1.0 in testing.
+    """
+    from .voice import VOWELS, _formant_gain
+    f = np.fft.rfftfreq(n_fft, 1.0 / sr)
+    band = (f > 180.0) & (f < 4200.0)
+    if np.count_nonzero(band) < 8:
+        return 1.0
+    fb = f[band]
+    E = _shape(_envelope(P)[band], fb)
+    best = -2.0
+    est = 1.0
+    for s in _TRACT_GRID:
+        H = _formant_gain(sr, n_fft, VOWELS["uh"], scale=float(s), bright=1.0)
+        c = float(np.dot(E, _shape(np.log(H[band] + 1e-12), fb)))
+        if c > best:
+            best = c
+            est = float(s)
+    a, b = _TRACT_FIT
+    return float(np.clip(a + b * est, 0.75, 1.45))
+
+
 def _spectral(x, sr, voiced, hop=441, win=2048):
     """Average voiced-frame spectrum -> centroid, tilt, HF ratio, formants."""
     n = x.size
     frames = 1 + max(0, (n - win) // hop)
     if frames < 4:
         return dict(centroid=REF_CENTROID_RATIO * REF_PITCH, tilt=-1.0,
-                    hf_ratio=0.1, formants=[500.0, 1500.0, 2500.0])
+                    hf_ratio=0.1, formants=[500.0, 1500.0, 2500.0],
+                    tract_scale=1.0)
     idx = np.arange(win)[None, :] + hop * np.arange(frames)[:, None]
     fr = x[idx] * np.hanning(win).astype(np.float32)
     S = np.abs(np.fft.rfft(fr, axis=1))
@@ -231,7 +308,8 @@ def _spectral(x, sr, voiced, hop=441, win=2048):
             break
     while len(picked) < 3:
         picked.append([500.0, 1500.0, 2500.0][len(picked)])
-    return dict(centroid=centroid, tilt=tilt, hf_ratio=hf, formants=picked)
+    return dict(centroid=centroid, tilt=tilt, hf_ratio=hf, formants=picked,
+                tract_scale=_tract_scale(P, sr, win))
 
 
 def analyse_vocal(x, sr=SR):
@@ -252,11 +330,18 @@ def analyse_vocal(x, sr=SR):
         raise RuntimeError(
             "not enough sung pitch found - try a cleaner vocal or a longer excerpt")
 
-    # Register comes from the cepstral comb, which does not confuse octaves;
-    # the frame track only supplies range and vibrato, folded onto that anchor.
-    med = cepstral_f0(x, sr, voiced)
-    if med <= 0:
-        med = float(np.median(good))
+    # Register: the median of the per-frame track. It used to be anchored on
+    # the cepstral comb, which is supposed to be octave-proof; measured against
+    # 24 melodies of known pitch it lands more than a third of an octave out on
+    # 13 of them (mean 0.63 octave), while the frame median is out on 2 (mean
+    # 0.12). A wrong anchor also drags the whole range with it, so a 450 Hz
+    # singer came back as a 185 Hz one. The comb is now only a cross-check, for
+    # the low register where the tracker can double the period.
+    med = float(np.median(good))
+    if med < 90.0:
+        cep = cepstral_f0(x, sr, voiced)
+        if cep > med * 1.5:
+            med = cep
     folded = []
     for v in good:
         ratio = np.log2(max(med, 1.0) / max(v, 1.0))
@@ -273,7 +358,7 @@ def analyse_vocal(x, sr=SR):
     rate, depth = _vibrato(f0, voiced, 441, sr)
     sp = _spectral(x, sr, voiced)
 
-    fscale = float(np.clip(sp["formants"][0] / REF_F1, 0.75, 1.45))
+    fscale = float(sp["tract_scale"])
     # centroid and HF energy both scale with pitch: normalise before mapping
     pitch_rel = max(med, 60.0) / REF_PITCH
     ratio = sp["centroid"] / max(med, 60.0)
@@ -351,6 +436,17 @@ def train_voice(source, name, base="songs", sr=SR, mode="center",
         stems = separate.separate_demucs(
             source if isinstance(source, str) else None, sr=sr, progress=prog,
             audio=None if isinstance(source, str) else audio)
+        # this branch used to fall straight through to `profile.update(...)`
+        # with `profile` never assigned, so training with Demucs installed --
+        # the one path the README recommends for dense mixes -- always died
+        # with UnboundLocalError before anything was saved.
+        if not np.any(stems["vocals"]):
+            raise RuntimeError(
+                "no vocal could be extracted from this file - this mix may be "
+                "too dense or mostly instrumental. Try a longer excerpt or a "
+                "cleaner recording.")
+        prog(0.8, "analysing the singer")
+        profile = analyse_vocal(stems["vocals"], sr)
     else:
         # Dense mixes sometimes leave too little voice after a centre-only
         # split, so try the repetition-based mode as a fallback before giving up.

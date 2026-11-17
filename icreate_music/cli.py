@@ -98,8 +98,23 @@ def make_one(args, seed, out_path, show=True):
         lead_inst=args.lead_inst or None, pad_inst=args.pad_inst or None,
     )
     t0 = time.time()
-    audio, info, stems = song.render(
-        params, progress=None if args.quiet else _progress)
+    try:
+        audio, info, stems = song.render(
+            params, progress=None if args.quiet else _progress)
+    except ValueError as exc:
+        # a length or parameter the renderer refuses is a message, not a
+        # traceback: this used to dump numpy's internals at the user
+        if not args.quiet:
+            sys.stdout.write("\r" + " " * 40 + "\r")
+        raise SystemExit("error: %s" % exc) from None
+    except MemoryError:
+        # long songs are the usual cause; say so instead of showing the
+        # allocator's complaint
+        if not args.quiet:
+            sys.stdout.write("\r" + " " * 40 + "\r")
+        raise SystemExit(
+            "error: ran out of memory rendering %.0f s of audio - try a "
+            "shorter --seconds" % args.seconds) from None
     if not args.quiet:
         sys.stdout.write("\r" + " " * 40 + "\r")
     export.write_wav(out_path, audio, args.sr)

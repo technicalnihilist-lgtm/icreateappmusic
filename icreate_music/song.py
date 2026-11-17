@@ -342,6 +342,7 @@ DEFAULT_SR = 44100
 
 
 BPM_RANGE = (20, 400)          # anything outside this is a typo, not a tempo
+MAX_RENDER_SECONDS = 1800.0    # 30 min: 4x the web UI's longest setting
 
 
 def _int_param(params, key, default):
@@ -390,6 +391,14 @@ def render(params, progress=None):
         seconds = 90.0
     if not np.isfinite(seconds):
         seconds = 90.0
+    # Every track buffer is one float32 per sample, and a render holds about a
+    # dozen of them: past half an hour that is several GB and the render dies
+    # deep inside numpy with a bare MemoryError (the web app showed the user
+    # "Unable to allocate 149. MiB ..."). Refuse it up front, in words.
+    if seconds > MAX_RENDER_SECONDS:
+        raise ValueError(
+            "asked for %.0f s of audio; the longest song this can render is "
+            "%.0f s" % (seconds, MAX_RENDER_SECONDS))
     target_bars = max(4, int(round(seconds / (4.0 * spb))))
     sections = build_arrangement(genre, target_bars)
 

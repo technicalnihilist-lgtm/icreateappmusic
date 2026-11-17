@@ -114,10 +114,38 @@ def load_audio(path, sr=SR):
     return np.ascontiguousarray(x, dtype=np.float32)
 
 
+def _antialias(x, sr, cutoff):
+    """Brickwall lowpass, for downsampling only (numpy FFT, no scipy).
+
+    Linear interpolation is not a filter. Decimating 96 kHz to 44.1 kHz with
+    it folded a full-scale 30 kHz tone down to 14.1 kHz, still at full scale:
+    a phantom whistle over the whole vocal stem. The taper is a 10% cosine
+    edge so the brickwall does not ring.
+    """
+    n = x.size
+    nfft = 1 << int(np.ceil(np.log2(max(2, 2 * n))))   # room for the filter tail
+    X = np.fft.rfft(x.astype(np.float64), nfft)
+    f = np.fft.rfftfreq(nfft, 1.0 / sr)
+    H = np.clip((cutoff - f) / (0.1 * cutoff) + 0.5, 0.0, 1.0)
+    y = np.fft.irfft(X * H, nfft)[:n]
+    # the brickwall's tail wraps around the circular transform and lands on the
+    # first and last few samples (a 0.09 step at the start of a filtered tone);
+    # ramp those edges like _dewindow does
+    edge = min(64, y.size // 2)
+    if edge > 0:
+        ramp = np.linspace(0.0, 1.0, edge)
+        y[:edge] *= ramp
+        y[-edge:] *= ramp[::-1]
+    return y.astype(np.float32)
+
+
 def resample(x, sr_in, sr_out):
     n_out = int(round(len(x) * sr_out / float(sr_in)))
     if n_out <= 0:
         return x
+    x = np.asarray(x, dtype=np.float32)
+    if sr_out < sr_in and x.size > 8:
+        x = _antialias(x, sr_in, sr_out * 0.45)
     idx = np.linspace(0, len(x) - 1, n_out)
     return np.interp(idx, np.arange(len(x)), x).astype(np.float32)
 

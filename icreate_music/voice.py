@@ -176,16 +176,6 @@ def _formant_gain(sr, n, formants, scale=1.0, bright=1.0):
     return H
 
 
-def _glottal(freq, n, sr, rng, bright=1.0, jitter=0.004):
-    """Band-limited saw-ish glottal source with vibrato/jitter handled outside."""
-    x = osc_additive(freq, n, sr, saw_partials(28, tilt=1.0))
-    x += osc_additive(freq, n, sr, saw_partials(14, tilt=0.7)) * 0.35
-    if jitter > 0:
-        t = _t(n, sr)
-        x *= 1.0 + jitter * np.sin(TAU * 3.7 * t) + jitter * 0.5 * np.sin(TAU * 11.3 * t)
-    return x
-
-
 def sing_note(freq, dur, sr, vowel="a", onset="none", voice="female",
               vel=1.0, rng=None, glide_from=None, legato=False):
     """Render one sung note. Returns mono float32."""

@@ -71,6 +71,12 @@ def load_audio(path, sr=SR):
 
     mp3 and friends are decoded through ffmpeg when it is installed.
     """
+    # checked before anything else: a mistyped filename used to reach the
+    # ffmpeg branch and come back as "needs ffmpeg to decode" (or, for a
+    # folder, as a message with no filename in it at all), which sends the
+    # user off installing a decoder they do not need
+    if not os.path.isfile(path):
+        raise ValueError("no audio file at %s" % (path or "(an empty path)"))
     ext = os.path.splitext(path)[1].lower()
     if ext in (".wav", ".wave"):
         x, in_sr = _read_wav(path)

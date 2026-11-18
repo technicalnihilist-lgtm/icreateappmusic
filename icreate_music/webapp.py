@@ -20,8 +20,26 @@ from .voice import VOICE_LABELS
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+MAX_JOBS = 200          # finished jobs kept for the page to poll
 LIBRARY = []
 LIB_LOCK = threading.Lock()
+
+
+def _prune_jobs():
+    """Forget the oldest finished jobs.
+
+    JOBS only ever grew: a long session kept every finished render's result
+    dict alive for as long as the app ran. Pending ones are never dropped, so
+    the page can still poll whatever it just started.
+    """
+    with JOBS_LOCK:
+        extra = len(JOBS) - MAX_JOBS
+        if extra <= 0:
+            return
+        finished = [k for k, v in JOBS.items()
+                    if v.get("status") in ("done", "error", "unknown")]
+        for k in finished[:extra]:
+            JOBS.pop(k, None)
 
 
 def _load_library(out_dir):
@@ -436,6 +454,33 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _send_file(self, full, ctype="application/octet-stream", block=1 << 18):
+        """Stream a file instead of reading it whole.
+
+        A five-minute stereo song is a 53 MB wav: reading it into one bytes
+        object to serve it doubled that, which is most of a phone's heap. The
+        length still goes out up front, so the player can seek.
+        """
+        try:
+            size = os.path.getsize(full)
+            f = open(full, "rb")
+        except OSError:
+            return self._send(404, {"error": "not found"})
+        with f:
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(size))
+            self.send_header("Accept-Ranges", "none")
+            self.end_headers()
+            try:
+                while True:
+                    chunk = f.read(block)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
     def do_GET(self):
         path = urlparse(self.path).path
         if path in ("/", "/index.html"):
@@ -478,9 +523,7 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = "audio/mpeg"
             elif safe.endswith(".json"):
                 ctype = "application/json"
-            with open(full, "rb") as f:
-                data = f.read()
-            return self._send(200, data, ctype)
+            return self._send_file(full, ctype)
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -507,9 +550,11 @@ class Handler(BaseHTTPRequestHandler):
                     clean[k] = int(float(v or 0))
                 elif k in ("vocal", "stems"):
                     clean[k] = bool(v)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             # the old code let this escape do_POST, so the socket was dropped
-            # mid-request and the page only ever saw "failed to fetch"
+            # mid-request and the page only ever saw "failed to fetch".
+            # OverflowError is what int(float("inf")) raises: a number the JSON
+            # parsed fine but no int can hold, so the check has to cover it.
             return self._send(400, {"error": "seconds, bpm, key, seed and "
                                              "voice_octave must be numbers"})
         clean["sr"] = self.sr
@@ -518,6 +563,7 @@ class Handler(BaseHTTPRequestHandler):
         if clean.get("seed", 0) <= 0:
             clean["seed"] = theory.random_seed()
         jid = uuid.uuid4().hex[:12]
+        _prune_jobs()
         with JOBS_LOCK:
             JOBS[jid] = {"status": "running", "progress": 0.0, "message": "queued"}
         t = threading.Thread(target=_run_job,
@@ -551,6 +597,7 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(chunk)
                 remaining -= len(chunk)
         jid = uuid.uuid4().hex[:12]
+        _prune_jobs()
         with JOBS_LOCK:
             JOBS[jid] = {"status": "running", "progress": 0.02,
                          "message": "reading the song"}

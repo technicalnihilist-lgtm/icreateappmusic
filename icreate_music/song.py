@@ -366,7 +366,13 @@ def render(params, progress=None):
         sr = DEFAULT_SR
     if sr < 8000 or sr > 192000:
         sr = DEFAULT_SR          # nonsense rates only ever produced broken audio
-    seed = _int_param(params, "seed", 0) or theory.random_seed()
+    seed = _int_param(params, "seed", 0)
+    if seed <= 0:
+        # 0 means "pick one" (see --seed's help). A negative seed used to reach
+        # default_rng() and end the render with numpy's own "expected
+        # non-negative integer" -- a message with no clue in it. Any seed the
+        # UI accepts as "not a seed" is treated the same way.
+        seed = theory.random_seed()
     rng = np.random.default_rng(seed)
     genre = params.get("genre", "pop")
     if genre not in GENRES:

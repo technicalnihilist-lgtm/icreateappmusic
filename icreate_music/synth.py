@@ -158,6 +158,8 @@ def env_adsr(n, sr, a=0.01, d=0.1, s=0.7, r=0.15):
 
 
 def env_perc(n, sr, attack=0.004, decay=6.0):
+    if n <= 0:                      # a zero-length drum hit is not an error
+        return np.zeros(0, dtype=np.float32)
     t = _t(n, sr)
     e = (1.0 - np.exp(-t / max(attack, 1e-5))) * np.exp(-t * decay)
     m = np.max(np.abs(e)) or 1.0
@@ -254,7 +256,12 @@ def _karplus(freq, n, sr, ring=1.6, bright=0.5, damp=0.5, rng=None):
     # soften the excitation: brightness 0 = dark/thumpy, 1 = bright/twangy
     if bright < 0.99:
         k = 1.0 - bright
-        exc = np.convolve(exc, np.ones(max(1, int(1 + k * 6))) / max(1, int(1 + k * 6)), mode="same")
+        ker = max(1, int(1 + k * 6))
+        # the smoothing kernel must not outgrow the loop period: 'same' then
+        # returns the kernel's length, and the assignment into b[1:P+1] failed
+        # for notes above ~15 kHz (P smaller than the kernel)
+        ker = min(ker, P)
+        exc = np.convolve(exc, np.ones(ker) / ker, mode="same")[:P]
     b[1:P + 1] = exc
     decay = 10.0 ** (-3.0 / max(ring, 0.05) / sr)
     a = decay * damp
@@ -526,6 +533,8 @@ def pan_gains(pan):
 def reverb_ir(sr, seconds=1.9, decay=3.2, rng=None, damp=5200):
     rng = rng or np.random.default_rng(11)
     n = int(seconds * sr)
+    if n <= 0:                      # a zero-length room is silence, not a crash
+        return np.zeros(0, dtype=np.float32)
     t = _t(n, sr)
     ir = rng.normal(0, 1, n) * np.exp(-t * decay)
     ir = lowpass(ir, sr, damp)
@@ -588,6 +597,8 @@ def delay(x, sr, time_s=0.33, feedback=0.34, mix=0.25, pingpong=False):
 def compress(x, sr, thresh_db=-16.0, ratio=2.5, smooth_ms=80.0):
     """Simple, fast, frame-based downward compressor. Stereo-safe (per channel)."""
     x = np.asarray(x, dtype=np.float32)
+    if x.size == 0:
+        return x
     mono = x.ndim == 1
     sig = x if mono else x.mean(axis=0)
     frame = max(64, int(sr * 0.005))

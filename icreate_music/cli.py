@@ -138,9 +138,21 @@ def main(argv=None):
     if args.train:
         name = args.name or os.path.splitext(os.path.basename(args.train))[0]
         print("iCreate Music - training voice \"%s\" from %s" % (name, args.train))
-        prof = train_voice.train_voice(
-            args.train, name, base=args.library,
-            progress=None if args.quiet else _progress)
+        try:
+            prof = train_voice.train_voice(
+                args.train, name, base=args.library,
+                progress=None if args.quiet else _progress)
+        except (ValueError, RuntimeError, OSError) as exc:
+            # a wrong filename, a corrupt file or an undecodable one is a
+            # sentence for the user, not a traceback through three modules
+            if not args.quiet:
+                sys.stdout.write("\r" + " " * 40 + "\r")
+            raise SystemExit("error: %s" % exc) from None
+        except MemoryError:
+            if not args.quiet:
+                sys.stdout.write("\r" + " " * 40 + "\r")
+            raise SystemExit("error: ran out of memory training this voice - "
+                             "try a shorter excerpt") from None
         if not args.quiet:
             sys.stdout.write("\r" + " " * 40 + "\r")
         print("  register      %.1f Hz (%.1f semitones)"

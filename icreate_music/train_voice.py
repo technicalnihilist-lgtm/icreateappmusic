@@ -468,6 +468,14 @@ def train_voice(source, name, base="songs", sr=SR, mode="center",
                 last_err = exc
                 continue
         if profile is None:
+            secs = audio.shape[1] / float(sr)
+            if secs < 3.0:
+                # "too dense or mostly instrumental" is the wrong advice for a
+                # clip that is simply far too short to hold a sung note
+                raise RuntimeError(
+                    "%s is only %.2f s long - that is not enough to find a "
+                    "steady sung pitch. Use 10-20 s of singing."
+                    % (src_name, secs))
             raise RuntimeError(
                 "%s - this mix may be too dense or mostly instrumental. "
                 "Try a longer excerpt, a cleaner recording, or install Demucs "
